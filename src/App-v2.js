@@ -1,8 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import StarRating from './StarRating';
-import { useMovies } from './Hooks/useMovies';
-import { useLocalStorageState } from './Hooks/useLocalStorageState';
-import { useKey } from './Hooks/useKey';
 
 const average = arr =>
   arr.reduce((acc, cur, i, arr) => acc + cur / arr.length, 0);
@@ -11,9 +8,11 @@ const KEY = '5b623c85';
 
 export default function App() {
   const [query, setQuery] = useState('');
+  const [movies, setMovies] = useState([]);
+  const [watched, setWatched] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState('');
   const [selectedId, setSelectedId] = useState(null);
-  const { movies, isLoading, error } = useMovies(query); // custom hook
-  const [watched, setWatched] = useLocalStorageState([], 'watched'); // custom hook
 
   function handleSelectMovie(id) {
     setSelectedId(selectedId => (selectedId === id ? null : id));
@@ -30,6 +29,54 @@ export default function App() {
   function handleDeleteWatched(id) {
     setWatched(watched => watched.filter(movie => movie.imdbID !== id));
   }
+
+  useEffect(
+    function () {
+      const controller = new AbortController();
+
+      async function fetchMovies() {
+        try {
+          setIsLoading(true);
+          setError('');
+
+          const res = await fetch(
+            `http://www.omdbapi.com/?apikey=${KEY}&s=${query}`,
+            { signal: controller.signal }
+          );
+
+          if (!res.ok)
+            throw new Error(
+              'Something went wrong with fetching movies, try again!'
+            ); // when user lost connection
+
+          const data = await res.json();
+          if (data.Response === 'False') throw new Error('Movie not found'); // when query is wrong
+
+          setMovies(data.Search);
+          setError('');
+        } catch (err) {
+          if (err.name !== 'AbortError') {
+            setError(err.message);
+            console.log(err.message);
+          }
+        } finally {
+          setIsLoading(false);
+        }
+      }
+      if (query.length < 3) {
+        setMovies([]);
+        setError('');
+        return;
+      }
+      handleCloseMovie();
+      fetchMovies();
+
+      return function () {
+        controller.abort();
+      }; // fetch cleanup function
+    },
+    [query]
+  );
 
   return (
     <>
@@ -83,28 +130,20 @@ function ErrorMessage({ message }) {
   );
 }
 
-function NavBar({ children }) {
+const NavBar = function ({ children }) {
   return <nav className="nav-bar">{children}</nav>;
-}
+};
 
-function Logo() {
+const Logo = function () {
   return (
     <div className="logo">
       <span role="img">🍿</span>
       <h1>usePopcorn</h1>
     </div>
   );
-}
+};
 
-function Search({ query, setQuery }) {
-  const inputEl = useRef(null);
-
-  useKey('Enter', function () {
-    if (document.activeElement === inputEl.current) return;
-    inputEl.current.focus();
-    setQuery('');
-  }); // effect to focus on search input whenever user clicks Enter key
-
+const Search = function ({ query, setQuery }) {
   return (
     <input
       className="search"
@@ -112,24 +151,23 @@ function Search({ query, setQuery }) {
       placeholder="Search movies..."
       value={query}
       onChange={e => setQuery(e.target.value)}
-      ref={inputEl} // using ref prop to connect it to input element
     />
   );
-}
+};
 
-function NumResults({ movies }) {
+const NumResults = function ({ movies }) {
   return (
     <p className="num-results">
       Found <strong>{movies.length}</strong> results
     </p>
   );
-}
+};
 
-function Main({ children }) {
+const Main = function ({ children }) {
   return <main className="main">{children}</main>;
-}
+};
 
-function Box({ children }) {
+const Box = function ({ children }) {
   const [isOpen, setIsOpen] = useState(true);
   return (
     <div className="box">
@@ -139,9 +177,9 @@ function Box({ children }) {
       {isOpen && children}
     </div>
   );
-}
+};
 
-function MovieList({ movies, onSelectMovie }) {
+const MovieList = function ({ movies, onSelectMovie }) {
   return (
     <ul className="list list-movies">
       {movies?.map(movie => (
@@ -149,9 +187,9 @@ function MovieList({ movies, onSelectMovie }) {
       ))}
     </ul>
   );
-}
+};
 
-function Movie({ movie, onSelectMovie }) {
+const Movie = function ({ movie, onSelectMovie }) {
   return (
     <li onClick={() => onSelectMovie(movie.imdbID)}>
       <img src={movie.Poster} alt={`${movie.Title} poster`} />
@@ -164,14 +202,12 @@ function Movie({ movie, onSelectMovie }) {
       </div>
     </li>
   );
-}
+};
 
 function MovieDetails({ selectedId, onCloseMovie, onAddWatched, watched }) {
   const [movie, setMovie] = useState({});
   const [isLoading, setIsLoading] = useState(false);
   const [userRating, setUserRating] = useState('');
-
-  const countRef = useRef(0);
 
   const isWatched = watched.map(movie => movie.imdbID).includes(selectedId);
   const watchedUserRating = watched.find(
@@ -200,7 +236,6 @@ function MovieDetails({ selectedId, onCloseMovie, onAddWatched, watched }) {
       imdbRating: +imdbRating,
       runtime: +runtime.split(' ').at(0),
       userRating,
-      countRatingDecisions: countRef.current,
     };
     onAddWatched(newWatchedMovie);
     onCloseMovie();
@@ -220,7 +255,7 @@ function MovieDetails({ selectedId, onCloseMovie, onAddWatched, watched }) {
       getMovieDetails();
     },
     [selectedId]
-  ); // effect to get the details to clicked movie
+  );
 
   useEffect(
     function () {
@@ -231,16 +266,20 @@ function MovieDetails({ selectedId, onCloseMovie, onAddWatched, watched }) {
       }; // cleanup function to reset the title
     },
     [title]
-  ); // effect to set the title of application acc to clicked movie
-
-  useKey('Escape', onCloseMovie); // custom hook to close movieDetails when use press Enter key
+  );
 
   useEffect(
     function () {
-      if (userRating) countRef.current++;
+      const callback = e => {
+        if (e.code === 'Escape') onCloseMovie();
+      };
+      document.addEventListener('keydown', callback);
+      return function () {
+        document.removeEventListener('keydown', callback);
+      }; // cleanup by removing dom listner after component unmounts
     },
-    [userRating]
-  ); // effect to count in how many time user decided the rating
+    [onCloseMovie]
+  );
 
   return (
     <div className="details">
@@ -298,7 +337,7 @@ function MovieDetails({ selectedId, onCloseMovie, onAddWatched, watched }) {
   );
 }
 
-function WatchedSummary({ watched }) {
+const WatchedSummary = ({ watched }) => {
   const avgImdbRating = average(watched.map(movie => movie.imdbRating));
   const avgUserRating = average(watched.map(movie => movie.userRating));
   const avgRuntime = average(watched.map(movie => movie.runtime));
@@ -325,7 +364,7 @@ function WatchedSummary({ watched }) {
       </div>
     </div>
   );
-}
+};
 
 function WatchedList({ watched, onDeleteWatched }) {
   return (
